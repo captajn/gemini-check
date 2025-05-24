@@ -1,0 +1,6 @@
+{
+  "name": "Trình Đánh Giá Code Gemini",
+  "description": "Một công cụ đánh giá code tự động được cung cấp bởi Google Gemini. Dán mã của bạn, chọn ngôn ngữ và nhận phản hồi từ AI để cải thiện chất lượng mã, xác định lỗi tiềm ẩn và đề xuất các thực tiễn tốt nhất.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
