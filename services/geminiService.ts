@@ -1,8 +1,31 @@
-
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { GEMINI_MODEL_NAME } from '../constants';
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Kiểm tra và lấy API key từ biến môi trường hoặc từ người dùng
+const getApiKey = (userProvidedKey?: string) => {
+  // Ưu tiên sử dụng key do người dùng cung cấp nếu có
+  if (userProvidedKey && userProvidedKey.trim() !== '') {
+    return userProvidedKey.trim();
+  }
+
+  // Sử dụng key từ biến môi trường nếu không có key từ người dùng
+  const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("Khóa API Gemini không hợp lệ hoặc bị thiếu. Vui lòng đảm bảo `process.env.API_KEY` được cấu hình chính xác và hợp lệ.");
+  }
+  return apiKey;
+};
+
+// Khởi tạo GoogleGenAI với API key
+const createAiClient = (userProvidedKey?: string) => {
+  try {
+    const apiKey = getApiKey(userProvidedKey);
+    return new GoogleGenAI({ apiKey });
+  } catch (error) {
+    console.error("Lỗi khi khởi tạo GoogleGenAI client:", error);
+    throw error;
+  }
+};
 
 const handleGeminiError = (error: any, context: string): Error => {
     console.error(`Lỗi khi gọi Gemini API (${context}):`, error);
@@ -24,12 +47,11 @@ const handleGeminiError = (error: any, context: string): Error => {
     return new Error(error.message || `Đã xảy ra lỗi không xác định khi ${context === 'review' ? 'tìm nạp đánh giá mã' : 'tối ưu hóa mã'} từ API Gemini.`);
 };
 
-export const reviewCode = async (code: string, language: string): Promise<string> => {
-  if (!process.env.API_KEY) {
-    throw new Error("Khóa API Gemini (process.env.API_KEY) chưa được cấu hình. Vui lòng đảm bảo nó đã được thiết lập trong môi trường của bạn.");
-  }
-
-  const systemInstruction = `Bạn là một AI chuyên gia đánh giá mã. Mục tiêu chính của bạn là cung cấp phản hồi toàn diện, mang tính xây dựng và có thể hành động để giúp các nhà phát triển cải thiện mã của họ.
+export const reviewCode = async (code: string, language: string, userProvidedKey?: string): Promise<string> => {
+  try {
+    const ai = createAiClient(userProvidedKey);
+    
+    const systemInstruction = `Bạn là một AI chuyên gia đánh giá mã. Mục tiêu chính của bạn là cung cấp phản hồi toàn diện, mang tính xây dựng và có thể hành động để giúp các nhà phát triển cải thiện mã của họ.
 Phân tích đoạn mã được cung cấp trong ngữ cảnh của ngôn ngữ lập trình được chỉ định (${language}).
 
 Tập trung vào các khía cạnh sau:
@@ -47,7 +69,7 @@ Cấu trúc phản hồi của bạn một cách rõ ràng. Sử dụng Markdown
 
 Hãy đảm bảo toàn bộ phản hồi của bạn bằng tiếng Việt.`;
 
-  const userPrompt = `Vui lòng đánh giá đoạn mã ${language} sau đây. Cung cấp phản hồi chi tiết bằng tiếng Việt dựa trên các hướng dẫn đã được cung cấp:
+    const userPrompt = `Vui lòng đánh giá đoạn mã ${language} sau đây. Cung cấp phản hồi chi tiết bằng tiếng Việt dựa trên các hướng dẫn đã được cung cấp:
 
 \`\`\`${language}
 ${code}
@@ -55,7 +77,6 @@ ${code}
 
 `;
 
-  try {
     const response: GenerateContentResponse = await ai.models.generateContent({
         model: GEMINI_MODEL_NAME,
         contents: userPrompt,
@@ -77,17 +98,15 @@ ${code}
   }
 };
 
-export const optimizeCode = async (code: string, language: string): Promise<string> => {
-  if (!process.env.API_KEY) {
-    throw new Error("Khóa API Gemini (process.env.API_KEY) chưa được cấu hình. Vui lòng đảm bảo nó đã được thiết lập trong môi trường của bạn.");
-  }
-
-  const systemInstruction = `You are an expert code optimization AI. Your primary goal is to refactor the provided code to improve performance, readability, and maintainability. Apply clean code principles and language-specific best practices for ${language}. If the code is markup (like HTML, XML), also ensure its structure is well-formed and semantic.
+export const optimizeCode = async (code: string, language: string, userProvidedKey?: string): Promise<string> => {
+  try {
+    const ai = createAiClient(userProvidedKey);
+    
+    const systemInstruction = `You are an expert code optimization AI. Your primary goal is to refactor the provided code to improve performance, readability, and maintainability. Apply clean code principles and language-specific best practices for ${language}. If the code is markup (like HTML, XML), also ensure its structure is well-formed and semantic.
 Return ONLY the optimized code block itself. Do not include any explanatory text, markdown formatting (like \`\`\`language ... \`\`\`), or any other text outside of the optimized code. The output should be suitable for direct use as source code. Comments within the code are acceptable and encouraged if they clarify complex parts. For ${language} code, ensure the optimized version is fully functional and syntactically correct.`;
 
-  const userPrompt = `Please optimize the following ${language} code. Adhere strictly to the system instruction to return only the raw, optimized code:\n\n\`\`\`${language}\n${code}\n\`\`\``;
+    const userPrompt = `Please optimize the following ${language} code. Adhere strictly to the system instruction to return only the raw, optimized code:\n\n\`\`\`${language}\n${code}\n\`\`\``;
 
-  try {
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: GEMINI_MODEL_NAME,
       contents: userPrompt,
@@ -115,4 +134,4 @@ Return ONLY the optimized code block itself. Do not include any explanatory text
   } catch (error: any) {
     throw handleGeminiError(error, 'optimization');
   }
-};
+}; 

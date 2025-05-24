@@ -1,0 +1,12 @@
+{
+  "buildCommand": "npm run build",
+  "framework": "vite",
+  "outputDirectory": "dist",
+  "routes": [
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/index.html" }
+  ],
+  "env": {
+    "GEMINI_API_KEY": "AIzaSyAnCKdMUwNGyRckZf8LCt_YaH1U8gp9Pmc"
+  }
+} 
