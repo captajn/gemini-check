@@ -3,16 +3,33 @@ import { GEMINI_MODEL_NAME, SERVER_API_KEYS, SERVER_KEY_IDENTIFIER } from '../co
 
 // Biến lưu trữ chỉ số của key server hiện tại đang được sử dụng
 let currentServerKeyIndex = 0;
+// Biến lưu trữ các key đã bị vượt quá hạn ngạch
+const exhaustedKeys: Set<string> = new Set();
 
 // Kiểm tra và lấy API key từ biến môi trường hoặc từ người dùng
-const getApiKey = (userProvidedKey?: string) => {
+const getApiKey = (userProvidedKey?: string): string => {
   // Nếu người dùng yêu cầu sử dụng key của server
   if (userProvidedKey === SERVER_KEY_IDENTIFIER) {
     if (SERVER_API_KEYS.length === 0) {
       throw new Error("Không có API key nào được cấu hình trên server. Vui lòng nhập API key của bạn.");
     }
-    // Sử dụng key tiếp theo trong danh sách và quay vòng
-    const serverKey = SERVER_API_KEYS[currentServerKeyIndex];
+    
+    // Nếu tất cả các key đều đã bị vượt quá hạn ngạch
+    if (exhaustedKeys.size >= SERVER_API_KEYS.length) {
+      exhaustedKeys.clear(); // Reset lại để thử lại tất cả các key
+      throw new Error("Tất cả các API key của server đều đã vượt quá hạn ngạch. Vui lòng thử lại sau hoặc sử dụng API key của riêng bạn.");
+    }
+    
+    // Tìm key tiếp theo chưa bị vượt quá hạn ngạch
+    let attempts = 0;
+    let serverKey = SERVER_API_KEYS[currentServerKeyIndex];
+    
+    while (exhaustedKeys.has(serverKey) && attempts < SERVER_API_KEYS.length) {
+      currentServerKeyIndex = (currentServerKeyIndex + 1) % SERVER_API_KEYS.length;
+      serverKey = SERVER_API_KEYS[currentServerKeyIndex];
+      attempts++;
+    }
+    
     // Cập nhật chỉ số cho lần gọi tiếp theo
     currentServerKeyIndex = (currentServerKeyIndex + 1) % SERVER_API_KEYS.length;
     return serverKey;
@@ -24,30 +41,45 @@ const getApiKey = (userProvidedKey?: string) => {
   }
 
   // Sử dụng key từ biến môi trường nếu không có key từ người dùng
-  const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error("Khóa API Gemini không hợp lệ hoặc bị thiếu. Vui lòng đảm bảo `process.env.API_KEY` được cấu hình chính xác và hợp lệ.");
+  if (SERVER_API_KEYS.length > 0) {
+    // Nếu có key từ biến môi trường, sử dụng luân phiên
+    const serverKey = SERVER_API_KEYS[currentServerKeyIndex];
+    currentServerKeyIndex = (currentServerKeyIndex + 1) % SERVER_API_KEYS.length;
+    return serverKey;
   }
-  return apiKey;
+  
+  throw new Error("Không tìm thấy API key hợp lệ. Vui lòng nhập API key của bạn hoặc cấu hình biến môi trường GEMINI_API_KEY.");
 };
 
 // Khởi tạo GoogleGenAI với API key
-const createAiClient = (userProvidedKey?: string) => {
+const createAiClient = (userProvidedKey?: string): { client: GoogleGenAI; apiKey: string } => {
   try {
     const apiKey = getApiKey(userProvidedKey);
-    return new GoogleGenAI({ apiKey });
+    return { client: new GoogleGenAI({ apiKey }), apiKey };
   } catch (error) {
     console.error("Lỗi khi khởi tạo GoogleGenAI client:", error);
     throw error;
   }
 };
 
-const handleGeminiError = (error: any, context: string): Error => {
+const handleGeminiError = (error: any, context: string, apiKey?: string): Error => {
     console.error(`Lỗi khi gọi Gemini API (${context}):`, error);
+    
     if (error.message && error.message.includes("API key not valid")) {
-         return new Error("Khóa API Gemini không hợp lệ hoặc bị thiếu. Vui lòng đảm bảo `process.env.API_KEY` được cấu hình chính xác và hợp lệ.");
+         return new Error("Khóa API Gemini không hợp lệ. Vui lòng kiểm tra lại key của bạn.");
     }
+    
     if (error.message && error.message.toLowerCase().includes("quota")) {
+        // Nếu key từ server bị vượt quá hạn ngạch, đánh dấu nó
+        if (apiKey && SERVER_API_KEYS.includes(apiKey)) {
+            exhaustedKeys.add(apiKey);
+            
+            // Nếu vẫn còn key khác chưa bị vượt quá hạn ngạch, thông báo cho người dùng
+            if (exhaustedKeys.size < SERVER_API_KEYS.length) {
+                return new Error("API key của server đã vượt quá hạn ngạch. Đang thử với key khác...");
+            }
+        }
+        
         return new Error("Đã vượt quá hạn ngạch API Gemini. Vui lòng kiểm tra hạn ngạch của bạn hoặc thử lại sau.");
     }
     
@@ -62,11 +94,41 @@ const handleGeminiError = (error: any, context: string): Error => {
     return new Error(error.message || `Đã xảy ra lỗi không xác định khi ${context === 'review' ? 'tìm nạp đánh giá mã' : 'tối ưu hóa mã'} từ API Gemini.`);
 };
 
+// Hàm trợ giúp để thử lại yêu cầu với các key khác nhau khi gặp lỗi hạn ngạch
+const retryWithDifferentKeys = async <T>(
+  operation: (client: GoogleGenAI, currentApiKey: string) => Promise<T>,
+  userProvidedKey?: string,
+  context: string = 'operation',
+  maxRetries: number = 3
+): Promise<T> => {
+  let lastError: any;
+  let retryCount = 0;
+  
+  while (retryCount < maxRetries) {
+    try {
+      const { client, apiKey } = createAiClient(userProvidedKey);
+      return await operation(client, apiKey);
+    } catch (error: any) {
+      lastError = error;
+      const currentApiKey = error.apiKey;
+      
+      // Nếu lỗi không phải do hạn ngạch hoặc đã hết số lần thử lại, ném lỗi
+      if (!error.message || !error.message.toLowerCase().includes('quota') || retryCount >= maxRetries - 1) {
+        throw handleGeminiError(error, context, currentApiKey);
+      }
+      
+      console.log(`Lỗi hạn ngạch, đang thử lại với key khác... (${retryCount + 1}/${maxRetries})`);
+      retryCount++;
+    }
+  }
+  
+  throw handleGeminiError(lastError, context);
+};
+
 export const reviewCode = async (code: string, language: string, userProvidedKey?: string): Promise<string> => {
   try {
-    const ai = createAiClient(userProvidedKey);
-    
-    const systemInstruction = `Bạn là một AI chuyên gia đánh giá mã. Mục tiêu chính của bạn là cung cấp phản hồi toàn diện, mang tính xây dựng và có thể hành động để giúp các nhà phát triển cải thiện mã của họ.
+    return await retryWithDifferentKeys(async (ai, currentApiKey) => {
+      const systemInstruction = `Bạn là một AI chuyên gia đánh giá mã. Mục tiêu chính của bạn là cung cấp phản hồi toàn diện, mang tính xây dựng và có thể hành động để giúp các nhà phát triển cải thiện mã của họ.
 Phân tích đoạn mã được cung cấp trong ngữ cảnh của ngôn ngữ lập trình được chỉ định (${language}).
 
 Tập trung vào các khía cạnh sau:
@@ -84,7 +146,7 @@ Cấu trúc phản hồi của bạn một cách rõ ràng. Sử dụng Markdown
 
 Hãy đảm bảo toàn bộ phản hồi của bạn bằng tiếng Việt.`;
 
-    const userPrompt = `Vui lòng đánh giá đoạn mã ${language} sau đây. Cung cấp phản hồi chi tiết bằng tiếng Việt dựa trên các hướng dẫn đã được cung cấp:
+      const userPrompt = `Vui lòng đánh giá đoạn mã ${language} sau đây. Cung cấp phản hồi chi tiết bằng tiếng Việt dựa trên các hướng dẫn đã được cung cấp:
 
 \`\`\`${language}
 ${code}
@@ -92,22 +154,29 @@ ${code}
 
 `;
 
-    const response: GenerateContentResponse = await ai.models.generateContent({
-        model: GEMINI_MODEL_NAME,
-        contents: userPrompt,
-        config: {
-            systemInstruction: systemInstruction,
-            temperature: 0.5,
-        }
-    });
-    
-    const feedbackText = response.text;
+      try {
+        const response: GenerateContentResponse = await ai.models.generateContent({
+            model: GEMINI_MODEL_NAME,
+            contents: userPrompt,
+            config: {
+                systemInstruction: systemInstruction,
+                temperature: 0.5,
+            }
+        });
+        
+        const feedbackText = response.text;
 
-    if (typeof feedbackText !== 'string') {
-        console.error("Định dạng phản hồi không mong muốn từ Gemini API. Mong đợi một chuỗi.", response);
-        throw new Error("Đã nhận được định dạng phản hồi không mong muốn từ AI. Phản hồi có thể không đầy đủ.");
-    }
-    return feedbackText;
+        if (typeof feedbackText !== 'string') {
+            console.error("Định dạng phản hồi không mong muốn từ Gemini API. Mong đợi một chuỗi.", response);
+            throw new Error("Đã nhận được định dạng phản hồi không mong muốn từ AI. Phản hồi có thể không đầy đủ.");
+        }
+        return feedbackText;
+      } catch (error: any) {
+        // Thêm thông tin về API key vào lỗi để xử lý trong retryWithDifferentKeys
+        error.apiKey = currentApiKey;
+        throw error;
+      }
+    }, userProvidedKey, 'review');
   } catch (error: any) {
     throw handleGeminiError(error, 'review');
   }
@@ -115,37 +184,44 @@ ${code}
 
 export const optimizeCode = async (code: string, language: string, userProvidedKey?: string): Promise<string> => {
   try {
-    const ai = createAiClient(userProvidedKey);
-    
-    const systemInstruction = `You are an expert code optimization AI. Your primary goal is to refactor the provided code to improve performance, readability, and maintainability. Apply clean code principles and language-specific best practices for ${language}. If the code is markup (like HTML, XML), also ensure its structure is well-formed and semantic.
+    return await retryWithDifferentKeys(async (ai, currentApiKey) => {
+      const systemInstruction = `You are an expert code optimization AI. Your primary goal is to refactor the provided code to improve performance, readability, and maintainability. Apply clean code principles and language-specific best practices for ${language}. If the code is markup (like HTML, XML), also ensure its structure is well-formed and semantic.
 Return ONLY the optimized code block itself. Do not include any explanatory text, markdown formatting (like \`\`\`language ... \`\`\`), or any other text outside of the optimized code. The output should be suitable for direct use as source code. Comments within the code are acceptable and encouraged if they clarify complex parts. For ${language} code, ensure the optimized version is fully functional and syntactically correct.`;
 
-    const userPrompt = `Please optimize the following ${language} code. Adhere strictly to the system instruction to return only the raw, optimized code:\n\n\`\`\`${language}\n${code}\n\`\`\``;
+      const userPrompt = `Please optimize the following ${language} code. Adhere strictly to the system instruction to return only the raw, optimized code:\n\n\`\`\`${language}\n${code}\n\`\`\``;
 
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: GEMINI_MODEL_NAME,
-      contents: userPrompt,
-      config: {
-        systemInstruction: systemInstruction,
-        temperature: 0.3, // More deterministic for code generation
+      try {
+        const response: GenerateContentResponse = await ai.models.generateContent({
+          model: GEMINI_MODEL_NAME,
+          contents: userPrompt,
+          config: {
+            systemInstruction: systemInstruction,
+            temperature: 0.3, // More deterministic for code generation
+          }
+        });
+
+        const optimizedCodeText = response.text;
+
+        if (typeof optimizedCodeText !== 'string') {
+          console.error("Định dạng phản hồi không mong muốn từ Gemini API khi tối ưu hóa. Mong đợi một chuỗi.", response);
+          throw new Error("Đã nhận được định dạng phản hồi không mong muốn từ AI khi tối ưu hóa. Mã tối ưu có thể không đầy đủ.");
+        }
+        
+        // Simple check to remove markdown fences if Gemini still adds them despite the prompt
+        let finalCode = optimizedCodeText.trim();
+        const fenceRegex = new RegExp(`^\`\`\`(${language}|\\w*)?\\s*\\n?([\\s\\S]*?)\\n?\\s*\`\`\`$`, 's');
+        const match = finalCode.match(fenceRegex);
+        if (match && match[2]) {
+          finalCode = match[2].trim();
+        }
+
+        return finalCode;
+      } catch (error: any) {
+        // Thêm thông tin về API key vào lỗi để xử lý trong retryWithDifferentKeys
+        error.apiKey = currentApiKey;
+        throw error;
       }
-    });
-
-    const optimizedCodeText = response.text;
-
-    if (typeof optimizedCodeText !== 'string') {
-      console.error("Định dạng phản hồi không mong muốn từ Gemini API khi tối ưu hóa. Mong đợi một chuỗi.", response);
-      throw new Error("Đã nhận được định dạng phản hồi không mong muốn từ AI khi tối ưu hóa. Mã tối ưu có thể không đầy đủ.");
-    }
-    // Simple check to remove markdown fences if Gemini still adds them despite the prompt
-    let finalCode = optimizedCodeText.trim();
-    const fenceRegex = new RegExp(`^\`\`\`(${language}|\\w*)?\\s*\\n?([\\s\\S]*?)\\n?\\s*\`\`\`$`, 's');
-    const match = finalCode.match(fenceRegex);
-    if (match && match[2]) {
-      finalCode = match[2].trim();
-    }
-
-    return finalCode;
+    }, userProvidedKey, 'optimization');
   } catch (error: any) {
     throw handleGeminiError(error, 'optimization');
   }

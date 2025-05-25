@@ -22,11 +22,31 @@ export const SUPPORTED_LANGUAGES: LanguageOption[] = [
 export const DEFAULT_LANGUAGE: string = 'javascript';
 export const GEMINI_MODEL_NAME: string = 'gemini-2.5-flash-preview-04-17';
 
-// Các API key mặc định của server - Trong môi trường thực tế, nên lưu trữ ở phía server
+// Hàm để lấy các API key từ biến môi trường
+const getEnvironmentApiKeys = (): string[] => {
+  // Đọc key từ biến môi trường chính
+  const mainApiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
+  
+  // Đọc các key bổ sung từ biến môi trường (nếu có)
+  const additionalKeys: string[] = [];
+  for (let i = 1; i <= 10; i++) {
+    const keyName = `GEMINI_API_KEY_${i}`;
+    const key = process.env[keyName];
+    if (key) {
+      additionalKeys.push(key);
+    }
+  }
+  
+  // Kết hợp key chính và các key bổ sung, loại bỏ các key trống
+  return [mainApiKey, ...additionalKeys].filter(key => key && key.trim() !== '');
+};
+
+// Các API key mặc định của server - Kết hợp từ biến môi trường và các key cứng
 export const SERVER_API_KEYS: string[] = [
-  // Thêm các API key của bạn ở đây
-  "AIzaSyBcA34-f5WV7-eESM0kzdfEdVDvVv4ZA5A",
-  "AIzaSyDCkzMJdb1uDP46-GE_xuWa-cBwZWdhY68"
+  ...getEnvironmentApiKeys(),
+  // Thêm các API key cứng của bạn ở đây (nếu cần)
+  // "YOUR_SERVER_API_KEY_1",
+  // "YOUR_SERVER_API_KEY_2"
 ];
 
 // Khóa lưu trữ trong localStorage
