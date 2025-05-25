@@ -1,8 +1,23 @@
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
-import { GEMINI_MODEL_NAME } from '../constants';
+import { GEMINI_MODEL_NAME, SERVER_API_KEYS, SERVER_KEY_IDENTIFIER } from '../constants';
+
+// Biến lưu trữ chỉ số của key server hiện tại đang được sử dụng
+let currentServerKeyIndex = 0;
 
 // Kiểm tra và lấy API key từ biến môi trường hoặc từ người dùng
 const getApiKey = (userProvidedKey?: string) => {
+  // Nếu người dùng yêu cầu sử dụng key của server
+  if (userProvidedKey === SERVER_KEY_IDENTIFIER) {
+    if (SERVER_API_KEYS.length === 0) {
+      throw new Error("Không có API key nào được cấu hình trên server. Vui lòng nhập API key của bạn.");
+    }
+    // Sử dụng key tiếp theo trong danh sách và quay vòng
+    const serverKey = SERVER_API_KEYS[currentServerKeyIndex];
+    // Cập nhật chỉ số cho lần gọi tiếp theo
+    currentServerKeyIndex = (currentServerKeyIndex + 1) % SERVER_API_KEYS.length;
+    return serverKey;
+  }
+  
   // Ưu tiên sử dụng key do người dùng cung cấp nếu có
   if (userProvidedKey && userProvidedKey.trim() !== '') {
     return userProvidedKey.trim();

@@ -3,8 +3,9 @@ import { Header } from './components/Header';
 import { CodeInputForm } from './components/CodeInputForm';
 import { FeedbackDisplay } from './components/FeedbackDisplay';
 import { Footer } from './components/Footer';
+import { ApiKeyForm } from './components/ApiKeyForm';
 import { reviewCode, optimizeCode } from './services/geminiService';
-import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE } from './constants';
+import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, STORAGE_KEY_NAME, SERVER_KEY_IDENTIFIER } from './constants';
 
 const App: React.FC = () => {
   const [code, setCode] = useState<string>('');
@@ -20,39 +21,52 @@ const App: React.FC = () => {
 
   // Thêm state mới cho API key do người dùng nhập
   const [userApiKey, setUserApiKey] = useState<string>('');
-  const storedKeyName = 'geminiUserApiKey';
+  const [showApiKeyForm, setShowApiKeyForm] = useState<boolean>(false);
 
   useEffect(() => {
     // Kiểm tra API key khi component được mount
     const checkApiKey = () => {
       // Kiểm tra nếu có API key đã lưu trong localStorage
-      const savedApiKey = localStorage.getItem(storedKeyName);
+      const savedApiKey = localStorage.getItem(STORAGE_KEY_NAME);
       if (savedApiKey) {
         setUserApiKey(savedApiKey);
+        setShowApiKeyForm(false);
         return true;
       }
 
-      // Kiểm tra nếu có API key từ biến môi trường
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-      if (!apiKey || apiKey === '' || apiKey === 'PLACEHOLDER_API_KEY') {
-        setApiKeyError("Vui lòng nhập khóa API Gemini của bạn vào ô bên dưới để sử dụng ứng dụng.");
-        return false;
-      }
-      return true;
+      // Nếu không có key trong localStorage, hiển thị form nhập key
+      setShowApiKeyForm(true);
+      setApiKeyError("Vui lòng nhập khóa API Gemini của bạn hoặc sử dụng key của server để tiếp tục.");
+      return false;
     };
     
     checkApiKey();
   }, []);
 
+  const handleApiKeyChange = (key: string) => {
+    setUserApiKey(key);
+  };
+
   const handleApiKeySubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (userApiKey.trim()) {
+    if (userApiKey.trim() || userApiKey === SERVER_KEY_IDENTIFIER) {
       // Lưu API key vào localStorage để sử dụng cho những lần sau
-      localStorage.setItem(storedKeyName, userApiKey);
+      // Chỉ lưu key của người dùng, không lưu identifier của server
+      if (userApiKey !== SERVER_KEY_IDENTIFIER) {
+        localStorage.setItem(STORAGE_KEY_NAME, userApiKey);
+      } else {
+        // Nếu dùng key server, xóa key trong localStorage nếu có
+        localStorage.removeItem(STORAGE_KEY_NAME);
+      }
       setApiKeyError(null);
+      setShowApiKeyForm(false);
     } else {
-      setApiKeyError("Vui lòng nhập một khóa API hợp lệ.");
+      setApiKeyError("Vui lòng nhập một khóa API hợp lệ hoặc sử dụng key của server.");
     }
+  };
+
+  const toggleApiKeyForm = () => {
+    setShowApiKeyForm(!showApiKeyForm);
   };
 
   const handleReviewSubmit = useCallback(async () => {
@@ -61,9 +75,9 @@ const App: React.FC = () => {
       return;
     }
     
-    // Kiểm tra nếu không có API key từ biến môi trường và người dùng chưa nhập
-    if (apiKeyError && !userApiKey) {
-      setError("Vui lòng nhập khóa API Gemini trước khi tiếp tục.");
+    // Kiểm tra nếu không có API key và form đang hiển thị
+    if (showApiKeyForm) {
+      setError("Vui lòng nhập khóa API Gemini hoặc sử dụng key của server trước khi tiếp tục.");
       return;
     }
 
@@ -81,10 +95,15 @@ const App: React.FC = () => {
     } catch (e: any) {
       setError(e.message || "Đã xảy ra lỗi không mong muốn.");
       console.error("Lỗi khi gửi yêu cầu đánh giá:", e);
+      
+      // Nếu lỗi liên quan đến API key, hiển thị form
+      if (e.message && (e.message.includes("API key") || e.message.includes("quota"))) {
+        setShowApiKeyForm(true);
+      }
     } finally {
       setIsLoading(false);
     }
-  }, [code, language, apiKeyError, userApiKey]);
+  }, [code, language, userApiKey, showApiKeyForm]);
 
   const handleOptimizeCode = useCallback(async () => {
     if (!code.trim()) {
@@ -92,9 +111,9 @@ const App: React.FC = () => {
       return;
     }
     
-    // Kiểm tra nếu không có API key từ biến môi trường và người dùng chưa nhập
-    if (apiKeyError && !userApiKey) {
-      setOptimizationError("Vui lòng nhập khóa API Gemini trước khi tiếp tục.");
+    // Kiểm tra nếu form đang hiển thị
+    if (showApiKeyForm) {
+      setOptimizationError("Vui lòng nhập khóa API Gemini hoặc sử dụng key của server trước khi tiếp tục.");
       return;
     }
 
@@ -109,41 +128,45 @@ const App: React.FC = () => {
     } catch (e: any) {
       setOptimizationError(e.message || "Đã xảy ra lỗi không mong muốn trong quá trình tối ưu hóa.");
       console.error("Lỗi khi tối ưu hóa mã:", e);
+      
+      // Nếu lỗi liên quan đến API key, hiển thị form
+      if (e.message && (e.message.includes("API key") || e.message.includes("quota"))) {
+        setShowApiKeyForm(true);
+      }
     } finally {
       setIsOptimizing(false);
     }
-  }, [code, language, apiKeyError, userApiKey]);
+  }, [code, language, userApiKey, showApiKeyForm]);
 
 
   return (
     <div className="min-h-screen flex flex-col bg-black text-slate-100 font-sans">
       <Header />
       <main className="flex-grow container mx-auto p-4 md:p-6 lg:p-8 flex flex-col gap-6">
-        {apiKeyError && (
-          <div className="bg-red-700 border border-red-500 text-white px-4 py-3 rounded-md relative shadow-lg" role="alert">
-            <strong className="font-bold">Cấu Hình API Key!</strong>
-            <span className="block sm:inline ml-2">{apiKeyError}</span>
-            
-            <form onSubmit={handleApiKeySubmit} className="mt-3 flex flex-col sm:flex-row gap-2">
-              <input
-                type="text"
-                className="flex-grow p-2 rounded text-black"
-                placeholder="Nhập khóa API Gemini của bạn ở đây"
-                value={userApiKey}
-                onChange={(e) => setUserApiKey(e.target.value)}
-              />
-              <button
-                type="submit"
-                className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
-              >
-                Lưu Key
-              </button>
-            </form>
-            <div className="mt-2 text-sm">
-              <p>Chưa có API key? <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="underline">Lấy key miễn phí từ Google AI Studio</a></p>
+        {showApiKeyForm ? (
+          <ApiKeyForm
+            userApiKey={userApiKey}
+            onApiKeyChange={handleApiKeyChange}
+            onApiKeySubmit={handleApiKeySubmit}
+            apiKeyError={apiKeyError}
+          />
+        ) : (
+          <div className="flex justify-between items-center bg-gray-800 p-3 rounded-md">
+            <div>
+              <span className="text-green-400">API Key:</span> {userApiKey === SERVER_KEY_IDENTIFIER ? 
+                <span className="text-yellow-400">Đang sử dụng key của server</span> : 
+                <span className="text-green-400">✓ Đã cấu hình</span>
+              }
             </div>
+            <button
+              onClick={toggleApiKeyForm}
+              className="bg-blue-600 hover:bg-blue-700 text-white text-sm py-1 px-3 rounded"
+            >
+              Thay đổi API Key
+            </button>
           </div>
         )}
+        
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <CodeInputForm
             code={code}
@@ -154,7 +177,7 @@ const App: React.FC = () => {
             isLoading={isLoading}
             supportedLanguages={SUPPORTED_LANGUAGES}
             defaultLanguage={DEFAULT_LANGUAGE}
-            isSubmitDisabled={(!!apiKeyError && !userApiKey) || isLoading || isOptimizing}
+            isSubmitDisabled={showApiKeyForm || isLoading || isOptimizing}
           />
           <FeedbackDisplay
             feedback={feedback}
@@ -166,7 +189,7 @@ const App: React.FC = () => {
             optimizedCode={optimizedCode}
             isOptimizing={isOptimizing}
             optimizationError={optimizationError}
-            isApiKeyConfigured={!apiKeyError || !!userApiKey}
+            isApiKeyConfigured={!showApiKeyForm}
           />
         </div>
       </main>
